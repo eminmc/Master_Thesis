@@ -1,0 +1,182 @@
+---
+title: "Max SPRT-I-AA All Steps for A/B Experiment"
+author: "Emin Mansur Cengay"
+
+output:
+  html_document: default
+  
+---
+
+# Data Creation
+
+Create A/B data for the case p1 =0.5 and p2 =0.55
+
+```{r}
+  source("_1_Create_AB_Data.R")
+  NumSim= 10
+
+  library("parallel")
+  p1=0.5
+  p2=0.55
+  print (round (power.prop.test(p1=p1, p2=p2, power=0.8)$n,0))
+
+  NumIte10= round (power.prop.test(p1=p1, p2=p2, power=0.8)$n,0)
+
+  y10  = mclapply(1:NumSim, f_create_1AB_data_faster  ,NumIte=NumIte10   ,p1=p1 ,p2=p2  , mc.cores = 10)
+  x10  = do.call(rbind.data.frame, y10)
+  names (x10) = c("numSim","numIte","Arm1_suc","Arm2_suc","Arm1_cum_suc","Arm2_cum_suc")
+
+
+```
+
+
+
+
+Create A/A data for the case p1 =0.5 and p2 =0.5 the length is equal to case p1=0.5 and p2=0.51
+
+```{r}
+
+  p1=0.5
+  p2=0.51 # to calculate length
+  print (round (power.prop.test(p1=p1, p2=p2, power=0.8)$n,0))
+
+  NumIte0= round (power.prop.test(p1=p1, p2=p2, power=0.8)$n,0)
+  y0  = mclapply(1:NumSim, f_create_1AB_data_faster  ,NumIte=NumIte0   ,p1=p1 ,p2=p1  , mc.cores = 10)
+  x0  = do.call(rbind.data.frame, y0)
+  names (x0) = c("numSim","numIte","Arm1_suc","Arm2_suc","Arm1_cum_suc","Arm2_cum_suc")
+
+```
+
+# Learning Upper Boundary
+
+Calculate all LLR values with upper boundary algorithm on A/A data, we will slice it later.
+```{r}
+    source("_2_Learn_AA_Upper_Boundary.R")
+
+    yAA  = mclapply(1:NumSim, AA_LLR_AB_AllSimulation_vector , DF_= x0 ,N =NumIte0 , mc.cores = 10)
+    xAA   = do.call(rbind.data.frame, yAA)
+    names (xAA) = 1:length(xAA)
+```
+
+
+
+Slice it for the corresponding length of the case. Batch size to stop will be different. We get the max  %95 because the  alpha value is 0.05
+
+```{r}
+    df = xAA
+    batch0 = length ( seq(100,NumIte0, 100))  
+    df[, "max"] <- apply(df[, 2:batch0], 1, max)
+    sorted= sort(df$max, decreasing = FALSE)
+    q0 =round(quantile (sorted,0.95),2)
+    print ( paste0("Boundary for A/A: ",q0)) 
+    
+  
+```
+
+```{r}
+     df = xAA
+    batch10 = length ( seq(100,NumIte10, 100))  
+    df[, "max"] <- apply(df[, 2:batch10], 1, max)
+    sorted= sort(df$max, decreasing = FALSE)
+    q10 =round(quantile (sorted,0.95),2)
+    
+    print ( paste0("Boundary for A/B: ",q10)) 
+```
+
+# Calculate LLR
+
+Calculate the LLR for both A/A and A/B . Plot the average LLR valuse with boundries.
+```{r}
+  source ("_3_Calculate_LLR.R")
+  ## on A/B data  
+  y10_LLR  = mclapply(1:NumSim, maxSPRT_MAB_MC , DF_=x10 ,N =NumIte10 , mc.cores = 10)
+  x10_LLR = do.call(rbind.data.frame, y10_LLR)
+  
+  ## on A/A  
+  y0_LLR  = mclapply(1:NumSim, maxSPRT_MAB_MC , DF_=x0 ,N =NumIte0 , mc.cores = 10)
+  x0_LLR = do.call(rbind.data.frame, y0_LLR)
+  
+   # plot avg LLR with boundary
+  p1         = 0.5
+  r          = c(0,10)
+  plot (colMeans (x10_LLR)   ,  type = "l", col="blue", lwd =2, ylab = "LLR" , xlab = "Number of Batch" , main = paste0("Max SPRT-I-AA: A/B LLR & Boundary\n p1= ",p1," vs Delta")     ,ylim = c(0,5))
+  lines(colMeans (x0_LLR)    , col="red"   , lwd=4 )
+  abline(h=q10 , col="blue"  , lwd=2, lty=2 )
+  abline(h=q0  , col="red"   , lwd=2, lty=4 )
+  grid (NULL,NULL, lty = 6, col = "cornsilk2") 
+  legend("bottomright",legend=c("10","0"), col=c("blue","red"),lty = 1, ncol=1)
+```
+
+
+# Making a Decision 
+
+ Make decision, stop the experiment if LLR cross the upper boundary. If LLR do not cross the boundary during the experimen accept H0.
+ 
+```{r}
+  source ("_4_Make_Decision.R")
+  
+  
+  y10_Decision  = mclapply(1:NumSim, AB_Boundries_1row , DF_= x10_LLR  ,threshold= q10, mc.cores = 10)
+  x10_Decision = do.call(rbind.data.frame, y10_Decision)
+  print ("Type 2 error rate")
+  print (table (x10_Decision$Decision))
+  
+  
+  y0_Decision  = mclapply(1:NumSim, AB_Boundries_1row , DF_= x0_LLR  ,threshold= q0, mc.cores = 10)
+  x0_Decision = do.call(rbind.data.frame, y0_Decision)
+  print ("Type 1 error rate")
+  print (table (x0_Decision$Decision))
+```
+
+
+
+
+## How quickly H1 is accepted. How much time is saved
+
+```{r}
+
+  resultH1 = subset(x10_Decision, Decision=="AcceptH1")
+  
+  nmean =round (mean(resultH1$i),0)
+  RequiredBatch = NumIte10/100
+  saved = (RequiredBatch-nmean)/RequiredBatch  
+  
+  print (round (saved,2))
+  
+  
+  hist(resultH1$i,  main = paste0("Early Stopping") , xlab = "Number of Batch" , col="bisque" ,xlim=c(0,RequiredBatch))
+  grid()
+  abline(v=RequiredBatch, col="red", lwd=2)
+  abline(v=nmean, col="blue", lwd=2)
+  
+  
+  legend(x = "topright", inset=.05, 
+         c( paste0(RequiredBatch), paste0(nmean)),
+         col = c("red", "blue"),
+         lwd = c(1, 1),
+         cex=1,
+         title="Calculated - Average Batch "
+  )
+  
+  
+```
+
+
+## When H0 accepted
+
+H0 is accepted, when the LLR do not cross the boundary during the experiment so it is accepted at the end of the experiment. The batch size was 100 so it fits.
+
+```{r}
+
+  resultH0 = subset(x0_Decision, Decision=="AcceptH0")
+  
+  # distinct values on H0 accepted batch
+  unique (resultH0$i)
+  
+  # experiment length
+  NumIte0
+  
+  
+
+```
+
