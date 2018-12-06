@@ -1,0 +1,255 @@
+---
+title: "OneSample SPRT"
+author: "M Loecher"
+date: "23 6 2018"
+output: html_document
+---
+
+
+```{r}
+OneSamplePower = function(p=0.5,
+                          p0=0.3,
+                          alpha=0.05,
+                          beta=0.20,
+                          verbose=0
+){
+
+  (n=p*(1-p)*((qnorm(1-alpha/2)+qnorm(1-beta))/(p-p0))^2)
+  ceiling(n) # 50
+  z=(p-p0)/sqrt(p*(1-p)/n)
+  Power=pnorm(z-qnorm(1-alpha/2))+pnorm(-z-qnorm(1-alpha/2))
+  if (verbose) cat("power=", Power, "\n")
+  return(round(n))
+}
+
+
+OneSamplePower()
+
+p0=0.2;
+for (r in c(2,3,5,10)){
+  p1 = (1+r/100)*p0
+  cat(r, "%: ", OneSamplePower(p0=p0, p=p1), "\n", sep="")
+} 
+```
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(SPRT)
+library(parallel)
+
+#source('//user/home/loecherm/DropboxHWR/Studenten/ThesisWork/BIPM/2018/Mansur/SPRT/OneSamplePower.R')
+
+Ncores = 10 #on windows
+M = 100 #simulations per core
+newSimulation = TRUE
+p0=0.2;
+
+
+if (0){
+   r = 10; p0=0.2; typeI=FALSE
+   N = 3367 #10^6
+  p1 = p0*(1+r/100)
+  
+  if (typeI) x = sample(0:1, N, p= c(1-p0, p0), replace=TRUE) else x = sample(0:1, N, p= c(1-p1, p1), replace=TRUE)
+  xs = SPRT(type1 = 0.05,type2 = 0.2,values = x, h0=p0, h1=p1)
+  
+  plot(xs$data.llr$llr[1:10^5], type="l", ylim = c(-2,5) , main = "SPRT LLR - Boundaries", xlab = "Number of Observations",ylab = "LLR", xlim =c(0,3500));grid()
+    abline(h=xs$wald.A, col = "red")#upper threshold
+    abline(h=xs$wald.B, col = "blue")#lower threshold
+}
+
+```
+
+
+```{r}
+
+
+runSim = function(runID = 1, r = 10, p0=0.2, typeI=FALSE, alpha = 0.05, beta = 0.2, verbose = 0){
+  N = 10^6
+  p1 = p0*(1+r/100)
+  
+  if (typeI) x = sample(0:1, N, p= c(1-p0, p0), replace=TRUE) else x = sample(0:1, N, p= c(1-p1, p1), replace=TRUE)
+  
+  xs = SPRT(type1 = alpha,type2 = beta,values = x, h0=p0, h1=p1)
+    
+  if (verbose) {
+    cat("iteration ", runID, "\n")
+    if (verbose>1) {
+      
+      plot(xs$data.llr$llr[1:10^5], type="l" );grid() #ylim = c(-2,10)
+      abline(h=xs$wald.A, col = "red")
+      abline(h=xs$wald.B, col = "blue")
+    }
+  }
+  CrossedThresholdA = match(T, xs$data.llr$llr > xs$wald.A)
+  CrossedThresholdB = match(T, xs$data.llr$llr < xs$wald.B)
+  
+  if (is.na(CrossedThresholdB)  & is.na(CrossedThresholdA) ) {
+    if (verbose) print("no decision")
+  } else if (is.na(CrossedThresholdB)  & !is.na(CrossedThresholdA) ) {
+    if (verbose) cat("rejected H1 at ", CrossedThresholdA, "iterations \n")
+  } else if (!is.na(CrossedThresholdB)  & is.na(CrossedThresholdA) ) {
+    if (verbose) cat("accepted H0 at ", CrossedThresholdB, "iterations \n")
+  } else if (CrossedThresholdA < CrossedThresholdB) {
+    cat("rejected H1 at ", CrossedThresholdA, "iterations \n")
+  } else if (CrossedThresholdA > CrossedThresholdB) {
+    if (verbose)  cat("accepted H0 at ", CrossedThresholdB, "iterations \n")
+  } else print("bad coding :)")
+  
+  return(c(CrossedThresholdA,CrossedThresholdB))
+  invisible(xs)  
+}
+
+
+```
+
+
+```{r}
+runSim (runID = 1, r = 10, p0=0.2, typeI=FALSE, alpha = 0.05, beta = 0.2, verbose = 2)
+```
+
+
+
+```{r simData}
+if (newSimulation){
+  y2 = mclapply(1:(M*Ncores), runSim, r = 10, mc.cores = Ncores)  
+  y1 = mclapply(1:(M*Ncores), runSim, typeI=TRUE, r = 10, mc.cores = Ncores)
+  
+  save(y1,y2,file="sptSims.rda")
+} else {
+  load("sptSims.rda")
+}
+```
+
+
+## type 2
+
+
+```{r}
+  yy = do.call("rbind.data.frame",y2)
+  colnames(yy) = c("CrossedThresholdA", "CrossedThresholdB")
+  Rejected =  yy$CrossedThresholdA < yy$CrossedThresholdB | (is.na(yy$CrossedThresholdB)  & !is.na(yy$CrossedThresholdA)) 
+#779 out of 1000 
+  Accepted =  yy$CrossedThresholdA > yy$CrossedThresholdB | (!is.na(yy$CrossedThresholdB)  & is.na(yy$CrossedThresholdA)) 
+  #221 = type-II error. wow !!
+  #221 = type-II error. wow !!
+  
+  cat("power: H0 was rejected ", sum(Rejected, na.rm=TRUE ) , " times out of ", M*Ncores, "\n")
+  
+  cat("type II error: H0 was not rejected ", sum(Accepted, na.rm=TRUE ) , " times out of ", M*Ncores, "\n")
+  
+```
+
+
+```{r}
+plot (colMeans(y1))
+head (xs)
+```
+
+How much earlier rejected:?
+
+```{r}
+#nFreq=power.prop.test(p1=p1, p2=1.1*p1, power=0.8)$n
+
+nFreq=OneSamplePower(p0=p0, p=p0*1.1)
+
+nMax =max(yy$CrossedThresholdA[Rejected],na.rm=TRUE)
+
+hist(yy$CrossedThresholdA[Rejected], main = "SPRT Early Stopping", xlab = "Number of Observations", xlim = c(0,max(c(nFreq,nMax))), col="bisque")
+grid()
+abline(v=nFreq, col="red", lwd=2)
+
+abline(v=mean(yy$CrossedThresholdA[Rejected],na.rm=TRUE), col="blue", lwd=2)
+```
+
+
+## type 1
+
+
+```{r}
+
+
+  yy = do.call("rbind.data.frame",y1)
+  
+  colnames(yy) = c("CrossedThresholdA", "CrossedThresholdB")
+ Rejected =  yy$CrossedThresholdA < yy$CrossedThresholdB | (is.na(yy$CrossedThresholdB)  & !is.na(yy$CrossedThresholdA)) 
+#779 out of 1000 
+  Accepted =  yy$CrossedThresholdA > yy$CrossedThresholdB | (!is.na(yy$CrossedThresholdB)  & is.na(yy$CrossedThresholdA)) 
+  #221 = type-II error. wow !!
+  #221 = type-II error. wow !!
+  
+  cat("type-I error: H0 was rejected ", sum(Rejected, na.rm=TRUE ) , " times out of ", M*Ncores, "\n")
+  
+  cat("correct decision: H0 was accepted ", sum(Accepted, na.rm=TRUE ) , " times out of ", M*Ncores, "\n")
+  
+```
+
+How quickly was H0 accepted ?
+
+```{r}
+
+#nFreq=power.prop.test(p1=p1, p2=1.1*p1, power=0.8)$n
+
+nFreq=OneSamplePower(p0=p0, p=p0*1.1)
+
+nMax =max(yy$CrossedThresholdB[Accepted],na.rm=TRUE)
+
+hist(yy$CrossedThresholdA[Rejected], main = "SPRT Early Stopping", xlab = "Number of Observations", xlim = c(0,max(c(nFreq,nMax))), col="bisque")
+grid()
+abline(v=nFreq, col="red", lwd=2)
+
+abline(v=mean(yy$CrossedThresholdB[Accepted],na.rm=TRUE), col="blue", lwd=2)
+```
+
+
+
+
+----------
+How quickly was H0 accepted ?
+
+```{r}
+
+```
+-----
+
+```{r}
+
+#nFreq=power.prop.test(p1=p1, p2=1.1*p1, power=0.8)$n
+
+nFreq=OneSamplePower(p0=p0, p=p0*1.1)
+
+nMax =max(yy$CrossedThresholdA[Accepted],na.rm=TRUE)
+
+hist(yy$CrossedThresholdB[Accepted], main = "SPRT Early Stopping", xlab = "Number of Observations", xlim = c(0,max(c(nFreq,nMax))), col="bisque")
+grid()
+abline(v=nFreq, col="red", lwd=2)
+
+abline(v=mean(yy$CrossedThresholdB[Accepted],na.rm=TRUE), col="blue", lwd=2)
+```
+
+
+
+How much earlier wrong decision ?
+
+```{r}
+p1=p0;
+#nFreq=power.prop.test(p1=p1, p2=1.1*p1, power=0.8)$n
+
+nFreq=OneSamplePower(p0=p0, p=p0*1.1)
+
+nMax =max(yy$CrossedThresholdA[Rejected],na.rm=TRUE)
+
+hist(yy$CrossedThresholdA[Rejected], main = "SPRT Early Stopping", xlab = "Number of Observations", xlim = c(0,max(c(nFreq,nMax))), col="bisque")
+grid()
+abline(v=nFreq, col="red", lwd=2)
+
+abline(v=mean(yy$CrossedThresholdA[Rejected],na.rm=TRUE), col="darkgreen", lwd=2)
+```
+
+```{r}
+
+```
+
